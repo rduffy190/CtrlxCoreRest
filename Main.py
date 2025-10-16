@@ -4,7 +4,7 @@ import json
 import time
 import os
 def read_data(event):
-    pprint.pprint(json.dumps(event.data))
+    pprint.pprint(json.dumps(event['data']))
 if __name__ == '__main__':
     # Create API Object
     api = ctrlx_api.CtrlxApi(ip_addr='192.168.1.1',usr='boschrexroth', password='boschrexroth')
