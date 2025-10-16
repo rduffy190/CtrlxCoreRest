@@ -1,8 +1,19 @@
 import requests
 import json
-import sseclient
 import threading
+requests.packages.urllib3.disable_warnings()
 
+def parse_sse_event(raw_event):
+    """Parse raw SSE event text block into a dict"""
+    event = {}
+    for line in raw_event.strip().split("\n"):
+        if not line.strip() or line.startswith(":"):
+            continue  # skip comments or empty lines
+        if ":" not in line:
+            continue  # malformed line, ignore
+        field, value = line.split(":", 1)
+        event[field.strip()] = value.lstrip()
+    return event
 class CtrlxApi:
 
     def __init__(self, ip_addr, usr, password, cert_path='',key_path='', api_version = 'v2'):
@@ -14,7 +25,7 @@ class CtrlxApi:
             password (str): passward for user (default is boschrexroth)
             cert_path (str): path on this computer to the certificate used with Core, if left empty will run without verification
             key_path (str): path on this computer to the key frile for the certificate
-            api_version (str): core api version (same as major OS so if OS v2 then api is v2)
+            api_version (str): core api version (v2 default)
         """
         self.__ip_addr = ip_addr
         self.__usr = usr
@@ -27,6 +38,10 @@ class CtrlxApi:
             self.__verify = cert_path
         self.__cert = (cert_path, key_path)
 
+        self.__session = requests.Session()
+        self.__session.trust_env = False
+
+
     def connect(self):
         """Makes the initial connection to the Ctrlx Core, getting authorization token for the rest of the requests.
 
@@ -35,7 +50,7 @@ class CtrlxApi:
 
         auth_json = json.dumps({'name': self.__usr, 'password': self.__password}, separators=(',', ':'))
         url = 'https://' + self.__ip_addr + '/identity-manager'+self.__api_url+'auth/token'
-        r = requests.post(url, data=auth_json, verify=self.__verify, headers=self.__header, cert = self.__cert)
+        r = self.__session.post(url, data=auth_json, verify=self.__verify, headers=self.__header, cert = self.__cert)
         if not r.ok:
             return False, r.status_code
 
@@ -52,7 +67,7 @@ class CtrlxApi:
         Returns:
             requests.response: Response from the Ctrlx Core """
         url = 'https://' + self.__ip_addr + '/' + ctrlx_url
-        r = requests.get(url, verify=self.__verify, headers=self.__header,stream = stream, cert = self.__cert)
+        r = self.__session.get(url, verify=self.__verify, headers=self.__header,stream = stream, cert = self.__cert)
         return r
 
     def write(self, ctrlx_url, data):
@@ -64,7 +79,7 @@ class CtrlxApi:
         Returns:
             requests.response: Response from the Ctrlx Core """
         url = 'https://' + self.__ip_addr + '/' + ctrlx_url
-        r = requests.put(url, verify=self.__verify, headers=self.__header, data=data, cert = self.__cert)
+        r = self.__session.put(url, verify=self.__verify, headers=self.__header, data=data, cert = self.__cert)
         return r
 
     def create(self, ctrlx_url, data):
@@ -77,7 +92,7 @@ class CtrlxApi:
             requests.response: Response from the Ctrlx Core """
 
         url = 'https://' + self.__ip_addr + '/' + ctrlx_url
-        r = requests.post(url, verify=self.__verify, headers=self.__header, data=data, cert = self.__cert)
+        r = self.__session.post(url, verify=self.__verify, headers=self.__header, data=data, cert = self.__cert)
         return r
 
     def delete(self, ctrlx_url):
@@ -88,7 +103,7 @@ class CtrlxApi:
         Returns:
             requests.response: Response from the Ctrlx Core """
         url = 'https://' + self.__ip_addr + "/" + ctrlx_url
-        r = requests.delete(url, verify=self.__verify, headers=self.__header, cert = self.__cert)
+        r = self.__session.delete(url, verify=self.__verify, headers=self.__header, cert = self.__cert)
         return r
 
     def get_api_url(self):
@@ -193,12 +208,26 @@ class CtrlXSubscription:
 
     def __handle_subscription(self,r, close:threading.Event, fn_hdl):
         """checks for new data and calls the call back function."""
-        while not close.is_set():
-            sse = sseclient.SSEClient(r)
-            for event in sse.events():
-                fn_hdl(event)
-                if close.is_set():
-                    break
+        try:
+            while not close.is_set():
+                buffer = ""
+                for event in r.iter_lines(decode_unicode=True):
+                    if event:  # non-empty line
+                        buffer += event+ "\n"
+                    else:  # empty line = event delimiter
+                        # Parse event in buffer
+                        event = parse_sse_event(buffer)
+                        print(event)
+                        fn_hdl(event)
+                        buffer = ""
+                    if close.is_set():
+                        break
+        except Exception as e:
+            # Log or handle connection errors
+            print(f"Error in SSE loop: {e}")
+        finally:
+            if hasattr(r, "close"):
+                r.close()
 
 class CtrXNode:
     def __init__(self,api:CtrlxApi):
